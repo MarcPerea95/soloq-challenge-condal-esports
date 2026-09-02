@@ -47,6 +47,7 @@ const NO_DIVISION_TIERS = new Set(["UNRANKED","MASTER","GRANDMASTER","CHALLENGER
    (e.g. "MasterYi", "DrMundo"), so it's used directly as the key.
 ------------------------------------------------------------- */
 let DDRAGON_VERSION = "14.19.1"; // fallback if the version fetch fails
+let CHAMP_BY_ID = {}; // Riot numeric champion id -> { key: "MonkeyKing", name: "Wukong" }
 async function loadDDragonVersion(){
   try{
     const res = await fetch("https://ddragon.leagueoflegends.com/api/versions.json");
@@ -55,9 +56,116 @@ async function loadDDragonVersion(){
   } catch (e){
     console.warn("[SoloQ] No se pudo obtener la versión de Data Dragon, usando fallback.", e);
   }
+  try{
+    const res = await fetch(`https://ddragon.leagueoflegends.com/cdn/${DDRAGON_VERSION}/data/en_US/champion.json`);
+    const json = await res.json();
+    Object.values(json.data || {}).forEach(c => {
+      CHAMP_BY_ID[Number(c.key)] = { key: c.id, name: c.name };
+    });
+  } catch (e){
+    console.warn("[SoloQ] No se pudo obtener el listado de campeones de Data Dragon.", e);
+  }
 }
+
+// Resuelve el campeón de una fila del CSV. Prioriza el ID numérico (columna
+// "Champ"), que es un dato fiable de Riot y no depende de cómo se haya
+// escrito el nombre a mano ni de fórmulas de la hoja que puedan fallar
+// (#N/A). Si no hay ID o no se reconoce, cae al nombre en texto como red
+// de seguridad (ignorando errores de fórmula tipo #N/A).
+function champInfoFromRow(r){
+  const idNum = parseInt(r["Champ"], 10);
+  if (!isNaN(idNum) && CHAMP_BY_ID[idNum]) return CHAMP_BY_ID[idNum];
+  const nameRaw = r["Champ name"] || r["Champ"];
+  if (nameRaw && !isSpreadsheetError(nameRaw)) return { key: normalizeChampionKey(nameRaw), name: nameRaw };
+  return null;
+}
+
+/* Campeones cuya "id" de Data Dragon (el nombre de archivo de la imagen)
+   no sale de simplemente quitar espacios/puntuación al nombre tal cual se
+   escribe a mano en la hoja de cálculo. La clave del mapa es el nombre en
+   minúsculas sin ningún carácter que no sea a-z, así que da igual si en el
+   CSV se escribió "Kai'Sa", "Kaisa" o "kai sa": las tres caen en la misma
+   entrada. */
+const CHAMPION_KEY_OVERRIDES = {
+  wukong: "MonkeyKing", monkeyking: "MonkeyKing",
+  leblanc: "Leblanc",
+  reksai: "RekSai",
+  kaisa: "Kaisa",
+  khazix: "Khazix",
+  chogath: "Chogath",
+  velkoz: "Velkoz",
+  kogmaw: "KogMaw",
+  belveth: "Belveth",
+  ksante: "KSante",
+  drmundo: "DrMundo",
+  missfortune: "MissFortune",
+  masteryi: "MasterYi",
+  tahmkench: "TahmKench",
+  twistedfate: "TwistedFate",
+  xinzhao: "XinZhao",
+  aurelionsol: "AurelionSol",
+  leesin: "LeeSin",
+  jarvaniv: "JarvanIV",
+  nunu: "Nunu", nunuwillump: "Nunu",
+  renata: "Renata", renataglasc: "Renata",
+  fiddlesticks: "Fiddlesticks",
+};
+
+// Convierte el nombre de campeón tal cual viene del CSV en la "id" exacta
+// que usa Data Dragon para el fichero de imagen (mira primero en la tabla
+// de excepciones de arriba y, si no está, hace el intento genérico de
+// quitar espacios/puntuación y poner cada palabra con mayúscula inicial).
+function normalizeChampionKey(rawName){
+  const clean = String(rawName || "").trim();
+  if (!clean) return clean;
+  const lookupKey = clean.toLowerCase().replace(/[^a-z]/g, "");
+  if (CHAMPION_KEY_OVERRIDES[lookupKey]) return CHAMPION_KEY_OVERRIDES[lookupKey];
+  return clean
+    .split(/[\s.'’&-]+/)
+    .filter(Boolean)
+    .map(w => w.charAt(0).toUpperCase() + w.slice(1))
+    .join("");
+}
+
+// Detecta errores típicos de fórmulas de Google Sheets/Excel (#N/A, #REF!, etc.)
+// que a veces se cuelan en la columna "Champ name" cuando el VLOOKUP/INDEX
+// que rellena esa celda no encuentra coincidencia. No son nombres de campeón.
+function isSpreadsheetError(v){
+  return /^#(N\/A|REF!|VALUE!|DIV\/0!|NAME\?|NULL!|NUM!)$/i.test(String(v).trim());
+}
+
+// Evita que un nombre con comillas o "&" rompa los atributos HTML (alt, title, etc.)
+function escapeHtml(str){
+  return String(str ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
 function champImgUrl(champKey){
-  return `https://ddragon.leagueoflegends.com/cdn/${DDRAGON_VERSION}/img/champion/${champKey}.png`;
+  return `https://ddragon.leagueoflegends.com/cdn/${DDRAGON_VERSION}/img/champion/${normalizeChampionKey(champKey)}.png`;
+}
+
+// Icono de repuesto (SVG en línea, sin depender de red) para cuando ni con
+// la normalización se encuentra la imagen — evita el icono roto del navegador
+// y avisa por consola con el nombre exacto que ha fallado, para depurarlo.
+const CHAMP_FALLBACK_IMG = "data:image/svg+xml;utf8," + encodeURIComponent(
+  `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="8" fill="#1b2432"/><text x="32" y="40" font-size="28" text-anchor="middle" fill="#5C6B82" font-family="sans-serif">?</text></svg>`
+);
+// OJO: esta función se llama desde el atributo onerror="" del HTML como
+// champImgFallback(this) — sin pasarle el nombre del campeón como texto,
+// para no tener que meter comillas dinámicas dentro de un atributo HTML
+// (eso es justo lo que rompía el fallback antes: JSON.stringify pone
+// comillas dobles, y el atributo onerror="..." también usa comillas
+// dobles, así que el navegador cortaba el atributo a mitad de frase y
+// el JS quedaba inválido — por eso nunca saltaba ni el aviso en consola
+// ni la imagen de repuesto). Leemos el nombre desde imgEl.alt en su lugar.
+function champImgFallback(imgEl){
+  imgEl.onerror = null;
+  console.warn("[SoloQ] No se encontró la imagen del campeón:", imgEl.alt);
+  imgEl.src = CHAMP_FALLBACK_IMG;
 }
 function formatDuration(minutesDecimal){
   const totalSeconds = Math.round(minutesDecimal * 60);
@@ -152,7 +260,7 @@ function buildPlayerStats(rows){
 
     if (!byPlayer[name]) byPlayer[name] = {
       name, games:0, wins:0, kills:0, deaths:0, assists:0,
-      totalDmg:0, minutes:0, visionScore:0, champCounts:{},
+      totalDmg:0, minutes:0, visionScore:0, champCounts:{}, champNames:{},
       goldEarned:0, dragons:0, barons:0, towers:0, inhibitors:0,
       pentakills:0, totalCS:0, resultLog:[],
     };
@@ -175,17 +283,18 @@ function buildPlayerStats(rows){
     p.pentakills += num(r["Pentakills"]);
     p.totalCS += num(r["Total CS"]);
 
-    const champ = r["Champ name"] || r["Champ"];
-    if (champ){
-      p.champCounts[champ] = (p.champCounts[champ] || 0) + 1;
-      p.lastChamp = champ; // used as a portrait fallback
+    const champInfo = champInfoFromRow(r);
+    if (champInfo){
+      p.champCounts[champInfo.key] = (p.champCounts[champInfo.key] || 0) + 1;
+      p.champNames[champInfo.key] = champInfo.name;
+      p.lastChamp = champInfo; // used as a portrait fallback
     }
   });
 
   return Object.values(byPlayer).map(p => {
     const sortedChamps = Object.entries(p.champCounts).sort((a,b)=>b[1]-a[1]);
     const topChamp = sortedChamps[0];
-    const top3Champs = sortedChamps.slice(0,3).map(([name,count]) => ({ name, count }));
+    const top3Champs = sortedChamps.slice(0,3).map(([key,count]) => ({ key, name: p.champNames[key] || key, count }));
     return {
       ...p,
       top3Champs,
@@ -199,7 +308,7 @@ function buildPlayerStats(rows){
       goldPerMin: p.minutes ? p.goldEarned / p.minutes : 0,
       csPerMin: p.minutes ? p.totalCS / p.minutes : 0,
       uniqueChamps: Object.keys(p.champCounts).length,
-      topChampName: topChamp ? topChamp[0] : "—",
+      topChampName: topChamp ? (p.champNames[topChamp[0]] || topChamp[0]) : "—",
       topChampGames: topChamp ? topChamp[1] : 0,
       objectives: p.dragons + p.barons,
       structures: p.towers + p.inhibitors,
@@ -225,14 +334,14 @@ function buildTournamentStats(rows){
     const win = bool(r["Result"]);
     if (win) totalWins += 1;
 
-    const champ = r["Champ name"] || r["Champ"];
-    if (champ){
-      if (!champAgg[champ]) champAgg[champ] = { name: champ, games: 0, wins: 0 };
-      champAgg[champ].games += 1;
-      if (win) champAgg[champ].wins += 1;
+    const champInfo = champInfoFromRow(r);
+    if (champInfo){
+      if (!champAgg[champInfo.key]) champAgg[champInfo.key] = { key: champInfo.key, name: champInfo.name, games: 0, wins: 0 };
+      champAgg[champInfo.key].games += 1;
+      if (win) champAgg[champInfo.key].wins += 1;
     }
 
-    const entry = { minutes, player: r["Player"], champ };
+    const entry = { minutes, player: r["Player"], champ: champInfo ? champInfo.name : "" };
     if (!longest || minutes > longest.minutes) longest = entry;
     if (!shortest || minutes < shortest.minutes) shortest = entry;
   });
@@ -384,7 +493,7 @@ function renderLeaderboard(stats){
     const losses = p.games - p.wins;
     const wrPct = Math.round(p.winRate * 100);
     const champsHTML = p.top3Champs.length
-      ? p.top3Champs.map(c => `<img class="lb-champ-icon" src="${champImgUrl(c.name)}" alt="${c.name}" title="${c.name} ×${c.count}" loading="lazy">`).join("")
+      ? p.top3Champs.map(c => `<img class="lb-champ-icon" src="${champImgUrl(c.key)}" alt="${escapeHtml(c.name)}" title="${escapeHtml(c.name)} ×${c.count}" loading="lazy" onerror="champImgFallback(this)">`).join("")
       : `<span class="empty-note">—</span>`;
 
     return `
@@ -445,7 +554,7 @@ function renderTournamentStats(t){
       </div>`;
     return `
       <div class="stat-card stat-card--champ">
-        <img class="stat-champ-img" src="${champImgUrl(champ.name)}" alt="${champ.name}" loading="lazy">
+        <img class="stat-champ-img" src="${champImgUrl(champ.key)}" alt="${escapeHtml(champ.name)}" loading="lazy" onerror="champImgFallback(this)">
         <div class="stat-champ-body">
           <p class="stat-label">${title}</p>
           <div class="stat-champ-name">${champ.name}</div>
