@@ -8,7 +8,7 @@
 
 const CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRn56mRGDa04SRzR-XDTgpGILmuFLq7cmXCHhRHHa0x-t0r7MUOmWDClIshT7eQoIse6aeLMZG57bwo/pub?gid=596174264&single=true&output=csv";
 const REFRESH_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
-const TOURNAMENT_END = new Date("2026-08-26T00:00:00+02:00"); // CEST
+const TOURNAMENT_END = new Date("2026-09-01T00:00:00+02:00"); // CEST
 const MIN_GAME_MINUTES = 3; // filters out remakes/aborted games from every stat
 
 /* ------------------------------------------------------------
