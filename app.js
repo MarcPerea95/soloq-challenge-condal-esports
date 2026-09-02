@@ -104,6 +104,16 @@ function normalizeChampionKey(rawName){
     .join("");
 }
 
+// Evita que un nombre con comillas o "&" rompa los atributos HTML (alt, title, etc.)
+function escapeHtml(str){
+  return String(str ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
 function champImgUrl(champKey){
   return `https://ddragon.leagueoflegends.com/cdn/${DDRAGON_VERSION}/img/champion/${normalizeChampionKey(champKey)}.png`;
 }
@@ -114,8 +124,18 @@ function champImgUrl(champKey){
 const CHAMP_FALLBACK_IMG = "data:image/svg+xml;utf8," + encodeURIComponent(
   `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="8" fill="#1b2432"/><text x="32" y="40" font-size="28" text-anchor="middle" fill="#5C6B82" font-family="sans-serif">?</text></svg>`
 );
-function champImgOnError(champKey){
-  return `this.onerror=null;this.src='${CHAMP_FALLBACK_IMG}';console.warn('[SoloQ] No se encontró la imagen del campeón:', ${JSON.stringify(String(champKey))});`;
+// OJO: esta función se llama desde el atributo onerror="" del HTML como
+// champImgFallback(this) — sin pasarle el nombre del campeón como texto,
+// para no tener que meter comillas dinámicas dentro de un atributo HTML
+// (eso es justo lo que rompía el fallback antes: JSON.stringify pone
+// comillas dobles, y el atributo onerror="..." también usa comillas
+// dobles, así que el navegador cortaba el atributo a mitad de frase y
+// el JS quedaba inválido — por eso nunca saltaba ni el aviso en consola
+// ni la imagen de repuesto). Leemos el nombre desde imgEl.alt en su lugar.
+function champImgFallback(imgEl){
+  imgEl.onerror = null;
+  console.warn("[SoloQ] No se encontró la imagen del campeón:", imgEl.alt);
+  imgEl.src = CHAMP_FALLBACK_IMG;
 }
 function formatDuration(minutesDecimal){
   const totalSeconds = Math.round(minutesDecimal * 60);
@@ -442,7 +462,7 @@ function renderLeaderboard(stats){
     const losses = p.games - p.wins;
     const wrPct = Math.round(p.winRate * 100);
     const champsHTML = p.top3Champs.length
-      ? p.top3Champs.map(c => `<img class="lb-champ-icon" src="${champImgUrl(c.name)}" alt="${c.name}" title="${c.name} ×${c.count}" loading="lazy" onerror="${champImgOnError(c.name)}">`).join("")
+      ? p.top3Champs.map(c => `<img class="lb-champ-icon" src="${champImgUrl(c.name)}" alt="${escapeHtml(c.name)}" title="${escapeHtml(c.name)} ×${c.count}" loading="lazy" onerror="champImgFallback(this)">`).join("")
       : `<span class="empty-note">—</span>`;
 
     return `
@@ -503,7 +523,7 @@ function renderTournamentStats(t){
       </div>`;
     return `
       <div class="stat-card stat-card--champ">
-        <img class="stat-champ-img" src="${champImgUrl(champ.name)}" alt="${champ.name}" loading="lazy" onerror="${champImgOnError(champ.name)}">
+        <img class="stat-champ-img" src="${champImgUrl(champ.name)}" alt="${escapeHtml(champ.name)}" loading="lazy" onerror="champImgFallback(this)">
         <div class="stat-champ-body">
           <p class="stat-label">${title}</p>
           <div class="stat-champ-name">${champ.name}</div>
